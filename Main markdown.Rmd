@@ -1,0 +1,672 @@
+---
+title: "Εργασία για το μάθημα:Ειδικά Θέματα Δικτύων Γνώσης και Σημασιολογικού Ιστού"
+author: "Stelios Batziakas"
+date: "4 Ιουνίου 2016"
+output:
+  word_document:
+    toc: yes
+  pdf_document:
+    toc: yes
+  html_document:
+    toc: yes
+    toc_float: yes
+---
+
+```{r setup, include=FALSE, echo=FALSE, warning=FALSE}
+library(igraph)
+library(knitr)
+library(plyr)
+library(dplyr)
+library(quantmod)
+library(ggplot2)
+library(reshape2)
+library(webshot)
+library(psych)
+library(Hmisc)
+library(plotly)
+library(scales)
+library(tree)
+library(ggdendro)
+library(caret)
+library(e1071)
+library(useful)
+library(infotheo)
+
+options(digits=3)
+
+#Custom function for qqplot in ggplot
+gg_qq <- function(x, distribution = "norm", ..., line.estimate = NULL, conf = 0.95,
+                  labels = names(x)){
+    q.function <- eval(parse(text = paste0("q", distribution)))
+    d.function <- eval(parse(text = paste0("d", distribution)))
+    x <- na.omit(x)
+    ord <- order(x)
+    n <- length(x)
+    P <- ppoints(length(x))
+    df <- data.frame(ord.x = x[ord], z = q.function(P, ...))
+    
+    if(is.null(line.estimate)){
+        Q.x <- quantile(df$ord.x, c(0.25, 0.75))
+        Q.z <- q.function(c(0.25, 0.75), ...)
+        b <- diff(Q.x)/diff(Q.z)
+        coef <- c(Q.x[1] - b * Q.z[1], b)
+    } else {
+        coef <- coef(line.estimate(ord.x ~ z))
+    }
+    
+    zz <- qnorm(1 - (1 - conf)/2)
+    SE <- (coef[2]/d.function(df$z)) * sqrt(P * (1 - P)/n)
+    fit.value <- coef[1] + coef[2] * df$z
+    df$upper <- fit.value + zz * SE
+    df$lower <- fit.value - zz * SE
+    
+    if(!is.null(labels)){ 
+        df$label <- ifelse(df$ord.x > df$upper | df$ord.x < df$lower, labels[ord],"")
+    }
+    
+    p <- ggplot(df, aes(x=z, y=ord.x)) +
+        geom_point() + 
+        geom_abline(intercept = coef[1], slope = coef[2]) +
+        geom_ribbon(aes(ymin = lower, ymax = upper), alpha=0.2) 
+    if(!is.null(labels)) p <- p + geom_text( aes(label = label))
+  
+    return(p)
+}
+
+
+```
+
+#Εισαγωγή
+
+Τα δεδομένα που εξετάζονται στην παρούσα εργασία αφορούν τον αριθμό, την κυριότητα και την εργασία στις αγροτικές εκμεταλλεύσεις στους διάφορους νομούς της Ελλάδας για το έτος 2012. Τα δεδομένα προέρχονται απο την Ελληνική Στατιστική υπηρεσία. Σύμφωνα με την ελληνική νομοθεσία ως αγροτική εκμετάλλευση ορίζεται "η μονάδα παραγωγήςπρος πώληση αγροτικών προϊόντων"[...]. Στις δραστηριότητες της γεωργικής εκμετάλλευσης περιλαμβάνεται παράλληλα με την παραγωγή των προϊόντων και η αποθήκευση, τυποποίηση, συσκευασία, εν γένει τοποθέτηση μέχρι του σταδίου της
+χονδρικής πώλησης, αποκλειστικά των προϊόντων που παράγει η ίδιαγεωργική εκμετάλλευση, καθώς και η πρώτη χωρική μεταποίησητους, ως και η διαχείριση ανανεώσιμων πηγών ενέργειας και η λειτουργία αγροτοτουριστικών μονάδων." (Βουλή των Ελληνών, 2010) (Νόμος 3874 (ΦΕΚ 151/Α/2010)).
+
+Η επεξεργασία των δεδομένων καθώς και η μορφοποίηση της παρουσιάσης έγιναν αποκλειστικά στην R.
+
+
+
+#Περιγραφική Στατιστική
+
+Στην παρούσα ενότητα θα παρουσιάσουμε με την βοήθεια της περιγραφικής στατιστικής το σύνολο των δεδομένων που αναλύθηκε. 
+
+##Περιγραφή των μεταβλητών
+
+Τα δεδομένα αποτελούνται από 16 μεταβλητές, από τις οποίες 14 είναι ποσοτικές και 2 ποιοτικές:
+
+1. Ποιοτικές μεταβλητές:
++ Το σύνολο των νομών στην Ελληνική επικράτεια
+
++ Το σύνολο των περιφερειών της χώρας
+
+2. Ποσοτικές μεταβλητές:
++Αριθμός αγροτικών εκμεταλλεύσεων στην Ελλάδα
+
++Εκτάση σε στρέμματα των αγροτικών εκτάσεων, των βοσκοτόπων και του κάθε νομού
+
++Αριθμός εργαζομένων σε αγροτικές εκμεταλλεύσεις και σύνολο των ημερών που εργάστηκε. Διακρίνονται 4 κατηγορίες εργαζομένων: Οι ιδιοκτήτες και οι οικογένειες τους, οι μόνιμοι και οι εποχιακοί εργαζόμενοι καθώς και μια κατηγορία που περιέχει οποιαδήποτε άλλη περίπτωση όπως πχ. την εθελοντική εργασία στα πλαίσια αγροτουρισμού και την δωρεάν αλληλοβοήθεια μεταξύ αγροτών. 
+
+
+```{r Posotiki perigrafi, echo=FALSE, warning=FALSE}
+load("~/Ergasies triminou/Ergasia Bratsas/teliki ergasia/Final_Dataset.Rda")
+paragogi <- read.csv2("~/Ergasies triminou/Ergasia Bratsas/paragogi.csv")
+
+
+aa<-colSums(df[1:4,3:16])
+df<-df[-2:-4,]
+df[1,3:16]<-aa
+df$Geolocation<-as.character(df$Geolocation)
+df[1,1]<- "ΝΟΜΟΣ ΑΤΤΙΚΗΣ"
+df$Geolocation<-as.factor(df$Geolocation)
+paragogi<-paragogi[-2:-4,]
+
+df<-cbind(df,paragogi)
+
+
+posot1<-df[,3:8]
+p<-psych::describe(posot1)
+p<-p[,c(3:5,8:12)]
+class(p) <- 'data.frame'
+kable(p)
+
+
+posot2<-df[,9:16]
+p<-psych::describe(posot2)
+p<-p[,c(3:5,8:12)]
+class(p) <- 'data.frame'
+kable(p)
+
+
+posot3<-df[,16:23]
+p<-psych::describe(posot3)
+p<-p[,c(3:5,8:12)]
+class(p) <- 'data.frame'
+kable(p)
+
+
+```
+
+
+## Γραφική διερεύνση
+
+```{r, echo=FALSE, warning=FALSE}
+
+
+a2<-ggplot(df,aes(y=WORKERS,x=Population))+geom_point(aes(color=Geolocation))+ theme(legend.position="none")+xlab("Πλυθησμός")+ylab("Αριθμός Εκμεταλλεύσεων")+ggtitle("Αριθμός εκμεταλλεύσεων σε σχέση με τον πλυθησμό ανά νομό")
+a2
+#ggplotly(a2)
+
+
+a3<-ggplot(df,aes(y=WORKERS,x=Size))+geom_point(aes(color=Geolocation))+ theme(legend.position="none")+xlab("Έκταση")+ylab("Αριθμός Εκμεταλλεύσεων")+ggtitle("Αριθμός εκμεταλλεύσεων σε σχέση με την έκταση ανά νομό")
+a3
+
+#ggplotly(a3)
+df1<-df
+df1$usualworkers<-rowSums(df[,c(9,11)])
+
+a4<-ggplot(df1,aes(x=WORKERS,y=usualworkers))+geom_point(aes(color=Geolocation))+ theme(legend.position="none")+xlab("Μόνιμοι εργαζόμενοι")+ylab("Αριθμός Εκμεταλλεύσεων")+ggtitle("Αριθμός εκμεταλλεύσεων σε σχέση με τον αριθμό μόνιμων εργαζόμενων ανά νομό")
+a4
+
+#ggplotly(a4)
+
+
+df1$sporadicworkers<-rowSums(df[,c(13,15)])
+
+a5<-ggplot(df1,aes(x=WORKERS,y=sporadicworkers))+geom_point(aes(color=Geolocation))+ theme(legend.position="none")+xlab("Περιστασιακοί εργαζόμενοι")+ylab("Αριθμός Εκμεταλλεύσεων")+ggtitle("Αριθμός εκμεταλλεύσεων σε σχέση με τον αριθμό περιστασιακών εργαζόμενων ανά νομό")
+a5
+
+#ggplotly(a5)
+
+melted <- melt(df[,c(1:2,9:16)], id.vars=c("Geolocation", "Prefecture.Name"))
+melted1<-filter(melted,melted$variable %in% c("Family_Members","Steady_Workers","Seasonal_Workers","Other"))
+melted2<-filter(melted,!melted$variable %in% c("Family_Members","Steady_Workers","Seasonal_Workers","Other"))
+
+means1<- ddply(melted1, c("Prefecture.Name", "variable"), summarise,
+               sum=sum(value))
+
+means1$variable<-droplevels((means1$variable))
+
+means2<- ddply(melted2, c("Prefecture.Name", "variable"), summarise,
+               sum=sum(value))
+
+
+means2$variable<-droplevels((means2$variable))
+means2$variable<-mapvalues(means2$variable,from=levels(means2$variable),to=c("Family Members","Steady Workers","Seasonal Workers","Other"))
+m1 <- ggplot(data=means1,aes(x=Prefecture.Name, y=sum , fill=variable))+ geom_bar(stat="identity")+ theme(axis.text.x = element_text(angle = 90, hjust = 1))+ scale_y_continuous(labels = comma)+xlab("Γεωγραφικές περιφέρειες")+ylab("Αριθμός Εργαζομένων ανά κατηγορία")
+m1
+#ggplotly(m1)
+
+m2 <- ggplot(data=means2,aes(x=Prefecture.Name, y=sum , fill=variable))+ geom_bar(stat="identity")+ theme(axis.text.x = element_text(angle = 90, hjust = 1))+ scale_y_continuous(labels = comma)+xlab("Γεωγραφικές περιφέρειες")+ylab("Αριθμός ημερών εργασίας ανά κατηγορία εργαζομένων")
+m2
+
+
+#ggplotly(m2)
+
+
+meltedb <- melt(df[,c(1:2,17:23)], id.vars=c("Geolocation", "Prefecture.Name"))
+
+means3<- ddply(meltedb, c("Prefecture.Name", "variable"), summarise,
+               sum=sum(value))
+
+m3<- ggplot(data=means3,aes(x=Prefecture.Name, y=sum , fill=variable))+ geom_bar(stat="identity")+ theme(axis.text.x = element_text(angle = 90, hjust = 1))+ scale_y_continuous(labels = comma)+xlab("Γεωγραφικές περιφέρειες")+ylab("Παραγωγή")
+m3
+
+#ggplotly(m3)
+
+
+meltedb <- melt(df[,c(1:2,17:23)], id.vars=c("Geolocation", "Prefecture.Name"))
+means3<- ddply(meltedb, c("Geolocation", "variable"), summarise,
+               sum=sum(value))
+m3<- ggplot(data=means3,aes(x=Geolocation, y=sum , fill=variable))+ geom_bar(stat="identity")+ theme(axis.text.x = element_text(angle = 90, hjust = 1))+ scale_y_continuous(labels = comma)+xlab("Γεωγραφικές περιφέρειες")+ylab("Παραγωγή")
+
+m3
+#ggplotly(m3)
+
+```
+
+
+
+
+#Ελέγχος κανονικότητας
+
+Με την βοήθεια του test Shapiro-Wilk, διαπιστώνουμε πως πολλές από τις μεταβλητές μας δεν ακολουθούν κανονική κατανομή.
+
+```{r, echo=FALSE, warning=FALSE}
+
+SWT<-sapply(df[,3:23],shapiro.test)
+SWT<-as.data.frame(SWT)
+SWT<-t(SWT)
+SWT<-SWT[,1:2]
+kable(SWT)
+
+```
+
+#Συσχέτιση Spearman
+
+Στον παρακάτω πίνακα, παρουσιάζονται οι στατιστικά σημαντικές (p < 0.05) συσχετίσεις Spearman για τις διάφορες:
+
+```{r, include=FALSE,echo=FALSE, warning=FALSE}
+library(Hmisc)
+```
+
+```{r, echo=FALSE, warning=FALSE}
+cors<-rcorr(as.matrix(df[,3:23]),type="spearman")
+
+values<-as.data.frame(cors[[1]])
+sig<-as.data.frame(cors[[3]])
+
+sig2<-sapply(sig, function(x) x<0.05)
+sig2<-as.data.frame(sig2)
+sig2<-sapply(sig2, as.numeric)
+sig2<-as.data.frame(sig2)
+sig2[is.na(sig2)] <- 0
+values<-as.data.frame(values)
+values<-values*sig2
+
+values2<-melt(values)
+values2$variable2<-colnames(values)
+values2<-values2[,c(1,3,2)]
+values2<-filter(values2,!value==0)
+
+kable(values2)
+
+plot(df[,3:16],gap=0)
+
+```
+
+#Μοντελοποiηση με παλινδρόμηση
+
+Θα δοκιμάσουμε να μοντελοποιήσουμε τον αριθμό των αγροτικών εκμεταλλεύσεων σε συνάρτηση με τον αριθμό ωρών εργασίας από κάθε ομάδα. Επειδή από την φύση της η μεταβλήτη που περιγράφει τις αγροτικές εκμεταλλεύσεις είναι ποσοτική διακριτή (count data), επιλέχθηκε η μοντελοποίηση με poisson regression.
+
+Δυστυχώς δεν έχουμε καλά αποτελέσματα
+```{r, echo=FALSE, warning=FALSE}
+
+
+lmod1<-glm(WORKERS~Work_Days1+Work_days2+Work.Days3+Work_Days4,data=df,family="poisson")
+summary(lmod1)
+```
+Παρόλο που πατατηρούμε στατιστικά σημαντικές τιμές, η τιμή της εκτίμισης για το intercept είναι πάρα πολύ μεγάλη σε σχέση με τις εκτιμήσεις για τις μέρες εργασίας.
+
+Τα υπόλοιπα της παλινδρόμησης ναι μεν παρουσιάζουν κανονικότητα, αλλα όχι καλό fit:
+```{r, echo=FALSE, warning=FALSE}
+dp<-data.frame(fit=lmod1$fitted.values,res=lmod1$residuals)
+p1<-ggplot(dp,aes(fit,res))+geom_point()
+   p1<-p1+stat_smooth(method="loess")+geom_hline(yintercept=0, col="red", linetype="dashed")
+    p1<-p1+xlab("Fitted values")+ylab("Residuals")
+    p1<-p1+ggtitle("Residual vs Fitted Plot")+theme_bw()
+    
+    x<-rstudent(lmod1)
+p2<-gg_qq(x)
+
+p2<-p2+xlab("TheoreticalQuantiles")+ylab("Standardized Residuals")+ggtitle("Normal Q-Q")
+
+p2    
+```
+
+Θα δοκιμάσουμε την αντίστοιχη διαδικασία, αλλά αυτή την φορά με την μέση τιμή εργασίας ανά εργαζόμενο, για κάθε κατηγορία, για κάθε νομό, παρατηρούμε όμως την ίδια συμπεριφορά:
+
+```{r, echo=FALSE, warning=FALSE}
+
+df2<-data.frame(WORKERS=df[,3],Work_Days1=(df$Work_Days1/df$Family_Members),Work_days2=(df$Work_days2/df$Steady_Workers),Work.Days3=(df$Work.Days3/df$Seasonal_Workers),Work_Days4=(df$Work_Days4/df$Other))
+
+lmod1<-glm(WORKERS~Work_Days1+Work_days2+Work.Days3+Work_Days4,data=df2,family="poisson")
+summary(lmod1)
+dp<-data.frame(fit=lmod1$fitted.values,res=lmod1$residuals)
+p1<-ggplot(dp,aes(fit,res))+geom_point()
+   p1<-p1+stat_smooth(method="loess")+geom_hline(yintercept=0, col="red", linetype="dashed")
+    p1<-p1+xlab("Fitted values")+ylab("Residuals")
+    p1<-p1+ggtitle("Residual vs Fitted Plot")+theme_bw()
+    
+    x<-rstudent(lmod1)
+p2<-gg_qq(x)
+
+p2<-p2+xlab("TheoreticalQuantiles")+ylab("Standardized Residuals")+ggtitle("Normal Q-Q")
+
+p2  
+```
+
+Τέλος μη ικανοποιητικό κρίνεται και το μοντέλο που περιλαμβάνει τον μέσο αριθμό μερών εργασίας και την παραγωγή κάθε κατηγορίας αγροτικού προιόντος:
+
+```{r, echo=FALSE, warning=FALSE}
+
+df2<-cbind(df2,df[,17:23])
+
+lmod1<-glm(WORKERS~.,data=df2,family="poisson")
+
+lmod1<-glm(WORKERS~Work_Days1+Work_days2+Work.Days3+Work_Days4,data=df2,family="poisson")
+summary(lmod1)
+dp<-data.frame(fit=lmod1$fitted.values,res=lmod1$residuals)
+p1<-ggplot(dp,aes(fit,res))+geom_point()
+   p1<-p1+stat_smooth(method="loess")+geom_hline(yintercept=0, col="red", linetype="dashed")
+    p1<-p1+xlab("Fitted values")+ylab("Residuals")
+    p1<-p1+ggtitle("Residual vs Fitted Plot")+theme_bw()
+    
+    x<-rstudent(lmod1)
+p2<-gg_qq(x)
+
+p2<-p2+xlab("TheoreticalQuantiles")+ylab("Standardized Residuals")+ggtitle("Normal Q-Q")
+
+p2 
+
+```
+
+
+
+#Παλινδρόμηση για την πρόβλεψη της συνολικής παραγωγής σε σχέση με τις μέσες εργασίας
+
+Στην ενότητα αυτή θα προσπαθήσουμε να μοντελοποιήσουμε την συνολική παραγωγή κάθε νομού σε σχέση με τις μέσες μέρες εργασίας, τον αριθμό κάθε κατηγορίας εργαζομένων, το σύνολο των εκμεταλλεύσεων και τον πληθυσμό κάθε νομού. Επειδή έχουμε πολύ διαφορετικές κλίμακες μεγεθών, θα χρησιμοποιήσουμε τις μεταβλητές κανονικοποιήμενες. 
+
+```{r, echo=FALSE, warning=FALSE}
+df2<-data.frame( WORKERS=df[,3],Faily_Members=df$Family_Members,Work_Days1=(df$Work_Days1/df$Family_Members),Steady_Workers=df$Steady_Workers,Work_days2=(df$Work_days2/df$Steady_Workers),Seasonal_Workers=df$Seasonal_Workers,Work.Days3=(df$Work.Days3/df$Seasonal_Workers),Other=df$Other,Work_Days4=(df$Work_Days4/df$Other),Production=rowSums(df[,17:23]))
+
+df2a<-as.data.frame(scale(df2))
+lmod2<-lm(Production~.,data=df2a)
+summary(lmod2)
+
+df2<-df2[order(df2$WORKERS),]
+
+```
+
+To μοντέλο δεν είναι καλά ορισμένο όπως είναι φανερό τόσο από το summary όσο και από το διαγνωστικά γραφήματα. Ο μόνος παράγοντας που προκύπτει στατιστικά σημαντικός σε σχέση με τη συνολική παραγωγή είναι ο αριθμός των επιχειρήσεων.
+H σχέση επιχειρήσεων και παραγωγής φαίνεται στο παρακάτω γράφημα:
+```{r, echo=FALSE, warning=FALSE}
+aa<-ggplot(df2,aes(x=WORKERS,y=Production))+geom_line()
+aa<-aa+xlab("Αριθμός Επιχειρήσεων")+ylab("Παραγωγή σε τόνους")
+```
+
+
+```{r, echo=FALSE, warning=FALSE}
+dp<-data.frame(fit=lmod2$fitted.values,res=lmod2$residuals)
+p1<-ggplot(dp,aes(fit,res))+geom_point()
+   p1<-p1+stat_smooth(method="loess")+geom_hline(yintercept=0, col="red", linetype="dashed")
+    p1<-p1+xlab("Fitted values")+ylab("Residuals")
+    p1<-p1+ggtitle("Residual vs Fitted Plot")+theme_bw()
+    
+    x<-rstudent(lmod2)
+p2<-gg_qq(x)
+
+p2<-p2+xlab("TheoreticalQuantiles")+ylab("Standardized Residuals")+ggtitle("Normal Q-Q")
+
+p2 
+
+```
+
+Δοκιμάζουμε ακόμα ένα μοντέλο χωρίς την μεταβλήτη με τον αριθμό των επιχειρήσεων, χωρίς κάποιο θετικό αποτέλεσμα.
+
+```{r, echo=FALSE, warning=FALSE}
+df3<-data.frame( Faily_Members=df$Family_Members,Work_Days1=(df$Work_Days1/df$Family_Members),Steady_Workers=df$Steady_Workers,Work_days2=(df$Work_days2/df$Steady_Workers),Seasonal_Workers=df$Seasonal_Workers,Work.Days3=(df$Work.Days3/df$Seasonal_Workers),Other=df$Other,Work_Days4=(df$Work_Days4/df$Other),Production=rowSums(df[,17:23]))
+
+df3<-as.data.frame(scale(df3))
+lmod2<-lm(Production~.,data=df3)
+summary(lmod2)
+```
+Εάν είχαμε το σύνολο της πραγματικής παραγωγής του κάθε νομού ένα τέτοιο μοντέλο θα μας έδειχνε το παράδοξο αποτέλεσμα ότι η γεωργική παραγωγή δεν εξαρτάται από το πόσοι άνθρωποι και για πόσο χρόνο εργαζόνται για αυτή.Φυσικά κάτι τέτοιο θα ήταν μια εντελώς εσφαλμένη κρίση. 
+
+
+#Ομαδοποίηση νομοών σε σχέση με την παραγωγή κάθε προιόντος
+
+Θα εξετάσουμε ομαδοποιήσεις στα δεδομένα σε σχέση με την παραγωγή κάθε νομού. Για την ενότητα αυτή θα εργαστούμε με τον αλγόριθμο k-means.
+
+```{r, echo=FALSE, warning=FALSE}
+
+
+
+ km<-kmeans(df[,17:23],6)
+plot(km,data=df[,17:23])
+
+
+ km3<-kmeans(df[,17:23],5)
+ 
+plot(km3,data=df[,17:23])
+
+
+ km2<-kmeans(df[,17:23],4)
+ 
+plot(km2,data=df[,17:23])
+
+
+ km1<-kmeans(df[,17:23],3)
+ 
+plot(km1,data=df[,17:23])
+
+
+df$cluster<-km$cluster
+
+```
+
+O αλγόριθμος διαχωρίζει τους νομούς στα παρακάτω Clusters:
+
+```{r, echo=FALSE, warning=FALSE}
+
+a1<-filter(df,cluster==1)
+
+a2<-filter(df,cluster==2)
+
+a3<-filter(df,cluster==3)
+
+a4<-filter(df,cluster==4)
+
+a5<-filter(df,cluster==5)
+
+a6<-filter(df,cluster==6)
+
+kable(a1$Geolocation,col.names ="Cluster 1")
+
+kable(a2$Geolocation,col.names ="Cluster 2")
+
+kable(a3$Geolocation,col.names ="Cluster 3")
+
+kable(a4$Geolocation,col.names ="Cluster 4")
+
+kable(a5$Geolocation,col.names ="Cluster 5")
+
+kable(a6$Geolocation,col.names ="Cluster 6")
+
+
+
+meltedb <- melt(df[,c(1:2,17:23)], id.vars=c("Geolocation", "Prefecture.Name"))
+means3<- ddply(meltedb, c("Geolocation", "variable"), summarise,
+               sum=sum(value))
+means3<-left_join(means3,df[,c(1,24)])
+
+
+m3<- ggplot(data=means3,aes(x=Geolocation, y=sum , fill=variable))+ geom_bar(stat="identity")+ theme(axis.text.x = element_text(angle = 90, hjust = 1))+ scale_y_continuous(labels = comma)+xlab("Γεωγραφικές περιφέρειες")+ylab("Παραγωγή")
+m3<- m3+facet_grid(cluster~.)
+
+
+m3
+
+#ggplotly(m3)
+```
+
+Μπορούμε να ερμηνεύσουμε ποιοτικά το αποτέλεσμα από το παραπάνω γράφημα, με τον αλγόριθμο να χωριζει τους νομόύς:
+
++Σε αυτούς που παράγουν σε μεγάλες ποσότητες (>200 tn)πορτοκαλια και παρόμοια φρούτα - Cluster 1
++Σε αυτούς που παράγουν σε μεσαίες (<200 tn & >80 tn)  ποσότητες σταφύλια Cluster 2
++Σε αυτούς που παράγουν σε μεγάλες ποσότητες ροδάκινα Cluster 3
++Σε αυτούς που παράγουν σε μικρή (50-60 tn) ποσότητες και κατά κύριο λόγο ελιές Cluster 4
++Σε αυτούς που παράγουν σε μεγάλες ποσότητες και κατά κύριο λόγο ελιές Cluster 5
++Στους νομούς με με πολύ μικρή αγροτική παραγωγή (συνολικά < 100tn)
+
+To clustering αυτό εξηγεί το 85.6% του συνολικού variability των δεδομένων.
+
+
+#Ομαδοποίηση νομών σε σχέση με τις ημέρες εργασίας
+
+```{r, echo=FALSE, warning=FALSE}
+df2<-data.frame(Geolocation=df$Geolocation, WORKERS=df[,3],Work_Days1=(df$Work_Days1/df$Family_Members),Work_days2=(df$Work_days2/df$Steady_Workers),Work.Days3=(df$Work.Days3/df$Seasonal_Workers),Work_Days4=(df$Work_Days4/df$Other))
+
+km<-kmeans(df2[,3:6],6)
+plot(km,data=df2[,3:6])
+
+df2$cluster<-km$cluster
+
+
+a1<-filter(df,cluster==1)
+
+a2<-filter(df,cluster==2)
+
+a3<-filter(df,cluster==3)
+
+a4<-filter(df,cluster==4)
+
+a5<-filter(df,cluster==5)
+
+a6<-filter(df,cluster==6)
+
+kable(a1$Geolocation,col.names ="Cluster 1")
+
+kable(a2$Geolocation,col.names ="Cluster 2")
+
+kable(a3$Geolocation,col.names ="Cluster 3")
+
+kable(a4$Geolocation,col.names ="Cluster 4")
+
+kable(a5$Geolocation,col.names ="Cluster 5")
+
+kable(a6$Geolocation,col.names ="Cluster 6")
+
+
+
+meltedb <- melt(df2[,c(1,3:6)], id.vars=c("Geolocation"))
+means3<- ddply(meltedb, c("Geolocation", "variable"), summarise,
+               sum=sum(value))
+means3<-left_join(means3,df2[,c(1,7)])
+
+
+m3<- ggplot(data=means3,aes(x=Geolocation, y=sum , fill=variable))+ geom_bar(stat="identity")+ theme(axis.text.x = element_text(angle = 90, hjust = 1))+ scale_y_continuous(labels = comma)+xlab("Γεωγραφικές περιφέρειες")+ylab("Παραγωγή")
+m3<- m3+facet_grid(cluster~.)
+
+
+m3
+
+#ggplotly(m3)
+```
+
+Στην περίπτωση αυτή όπου το To clustering εξηγεί το 80.3% του συνολικού variability των δεδομένων δεν είναι τόσο εύκολο να βγάλουμε συμπεράσματα.
+
+
+#Δεντρά regression για την μοντελοποίηση της συνολικής παραγωγής κάθε νομού
+
+Εφοσον στην προσπάθεια μας να μοντελοποιήσουμε την συνολική παραγωγή κάθε νομού σε σχέση με τις μέσες μέρες εργασίας, τον αριθμό κάθε κατηγορίας εργαζομένων κτλ. με γραμμική παλινδρόμηση δεν είχαμε καλά αποτελέσματα, θα δοκιμάσουμε το ίδιο με δέντρα παλινδρόμησης. Στην ενότητα αυτή, παρόλο που το dataset είναι πολύ μικρό, για τις ανάγκες της άσκησης θα χρησιμοποιησουμε τα 2/3 του μοντέλου για εκπαίδευση και το 1/3 για επαλήθευση του μοντέλου.
+
+```{r, echo=FALSE, warning=FALSE}
+
+set.seed(13)
+df2<-data.frame( WORKERS=df[,3],Faily_Members=df$Family_Members,Work_Days1=(df$Work_Days1/df$Family_Members),Steady_Workers=df$Steady_Workers,Work_days2=(df$Work_days2/df$Steady_Workers),Seasonal_Workers=df$Seasonal_Workers,Work.Days3=(df$Work.Days3/df$Seasonal_Workers),Other=df$Other,Work_Days4=(df$Work_Days4/df$Other),Production=rowSums(df[,17:23]))
+
+train<-sample(1:nrow(df2),nrow(df2)*2/3)
+test<-df2[-train,]
+traina<-df2[train,]
+
+
+
+
+
+tm<-tree(Production~.,df2,subset=train)
+
+plot(tm)
+text(tm,pretty=0)
+
+tree_data <- dendro_data(tm)
+  ggplot(segment(tree_data)) +
+    geom_segment(aes(x = x, y = y, xend = xend, yend = yend, size = n), 
+                 colour = "blue", alpha = 0.5) +
+    scale_size("n") +
+    geom_text(data = label(tree_data), 
+              aes(x = x, y = y, label = label), vjust = -0.5, size = 3) +
+    geom_text(data = leaf_label(tree_data), 
+              aes(x = x, y = y, label = label), vjust = 0.5, size = 2) +
+    theme_dendro()
+  
+  
+  yhat=predict(tm,newdata =df2[-train,])
+  
+  dp<-data.frame(predicted=yhat,real=test$Production)
+  
+  ggplot(dp,aes(y=predicted,x=real))+geom_point()+stat_smooth(method="loess")
+
+mean((yhat-test$Production)^2)
+```
+
+To από το δέντρο φαίνεται ότι οι μεταβλήτές που επηρεάζουν την παραγωγή είναι ο αριθμός των εκμεταλλεύσεων καθώς και ο αριθμός των σταθερών εργαζομένων. Το μοντέλο φαίνεται να έχει πολύ κακή προσαρμογή στα πραγματικά δεδομένα και μάλιστα έχουμε πάρα πολύ μεγάλο μέσο τετραγωνικό σφάλμα: R^2 = ```{r, echo=FALSE, warning=FALSE} 
+mean((yhat-test$Production)^2)``` . 
+
+
+#Classification της παραγωγής σε χαμηλή-ψηλή
+
+Για τις ανάγκες της άσκησης θα εφαρμόσουμε δύο τεχνικές ταξινόμησης, με δένδρα και SVM. Για να γίνει αυτό μετατρέπουμε την μεταβλητη σχετικά με την συνολική παραγωγή σε μια νέα μεταβλητή, κατηγορική με 2 τιμές "Χαμηλή" παραγωγή και "Ψηλή" παραγωγη. Ο διαχωρισμός έγινε αύθαιρετα, έτσι ώστε το σετ να είναι χωρισμένο στους 26 νομούς με την χαμηλότερη και 25 με την υψηλότερη.       
+
+
+```{r, echo=FALSE, warning=FALSE}
+
+set.seed(13)
+df2<-data.frame( WORKERS=df[,3],Faily_Members=df$Family_Members,Work_Days1=(df$Work_Days1/df$Family_Members),Steady_Workers=df$Steady_Workers,Work_days2=(df$Work_days2/df$Steady_Workers),Seasonal_Workers=df$Seasonal_Workers,Work.Days3=(df$Work.Days3/df$Seasonal_Workers),Other=df$Other,Work_Days4=(df$Work_Days4/df$Other),Production=rowSums(df[,17:23]))
+
+df2a<-discretize(df2$Production,nbins=2)
+df2$Production2<-df2a$X
+df2$Production2<-factor(df2$Production2)
+
+df2$Production2<-revalue(df2$Production2,c("1"="Low","2"="High"))
+
+df2<-df2[order(df2$Production2),]
+df2<-df2[,-10]
+
+train<-sample(1:nrow(df2),nrow(df2)*2/3)
+test<-df2[-train,]
+train2<-df2[train,]
+
+
+fit.rand.forest = CoreModel(Production2~., data=train2, model="rf",selectionEstimator="InfGain", minNodeWeightRF=5, rfNoTrees=1000)
+
+a<-predict(fit.rand.forest, newdata=test)
+a1<-table(a$class,test$Production2)
+confusionMatrix(a1)
+
+
+
+
+
+
+tm<-tree(Production2~.,df2,subset=train)
+fm<-predict(tm,test,type="class")
+
+
+ggdendrogram(tm)
+
+kable(table(fm,test$Production2))
+```
+
+Οπώς φαίνεται στο confusion Matrix, το μοντέλο ταξινόμησης με δέντρο δεν δίνει καθόλου καλά αποτελέσματα.
+
+
+Δοκιμάζωντας SVM αρχικά θα ψαξουμε για τις καλύτερες παραμέτρους, για radial και linear πυρήνες με διαφορετικό κόστος ανάμεσα στα (0.001,0.01,0.1,0.5,1,1.5,10,20,30,40,50,60,80,40,90,100,150,200). 
+```{r, echo=FALSE, warning=FALSE}
+
+set.seed(13)
+tune1<-tune(svm,Production2~.,data=df2,kernel='linear',ranges=list(cost=c(0.001,0.01,0.1,0.5,1,1.5,10,20,30,40,50,60,80,40,90,100,150,200)))
+
+
+set.seed(13)
+tune2<-tune(svm,Production2~.,data=df2,kernel='radial',ranges=list(cost=c(0.001,0.01,0.1,0.5,1,1.5,10,20,30,40,50,60,80,40,90,100,150,200)))
+
+tune1
+tune2
+```
+Εμπιστευόμενοι τα παραπάνω καταλήγουμε  στο γραμμικό πυρήνα με κόστος 50.Απο το γράφημα όμως βλέπουμε ότι έχουμε overfiting. 
+
+```{r, echo=FALSE, warning=FALSE}
+set.seed(13)
+svp <- svm(Production2~.,data=df2,kernel='linear',cost=50,scale=TRUE)
+
+plot(svp,data=df2,Work_Days1~Faily_Members)
+```
+Για τον radial πυρήνα:
+
+```{r, echo=FALSE, warning=FALSE}
+set.seed(13)
+svp <- svm(Production2~.,data=df2,kernel='radial',cost=20,scale=TRUE)
+
+plot(svp,data=df2,Work_Days1~Faily_Members)
+```
+
+
